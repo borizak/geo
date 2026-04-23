@@ -20,17 +20,22 @@
     #pulsePnl { position:fixed; top:10px; right:10px; background:rgba(0,0,0,0.88); color:#ff0;
                 padding:10px 16px; border-radius:8px; font:13px monospace; display:none;
                 z-index:20; border:1px solid rgba(255,220,0,0.5); line-height:1.6; }
+    #scaleTxt { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+                background:rgba(0,0,0,0.92); color:#fff; padding:22px 30px; border-radius:10px;
+                font:13px monospace; display:none; z-index:20; border:1px solid rgba(0,220,255,0.4);
+                line-height:1.9; text-align:center; pointer-events:none; }
   </style>
 </head>
 <body>
 <div id="cesium"></div>
 <div id="controls">
-  <button class="btn" id="btnHover"    onclick="toggleHover()">🛰 Altitude on hover</button>
-  <button class="btn" id="btnTether"   onclick="toggleTethers()">📏 Tether to ground</button>
-  <button class="btn" id="btnScale"    onclick="toggleScale()">📐 Scale indicator</button>
-  <button class="btn" id="btnPulse"    onclick="togglePulse()">⚡ Signal pulse (click sat)</button>
-  <button class="btn" id="btnISS"      onclick="toggleISS()">🚀 Show ISS</button>
-  <button class="btn" id="btnCoverage" onclick="toggleCoverage()">🔵 Coverage cones</button>
+  <button class="btn" id="btnHover"     onclick="toggleHover()">🛰 Altitude on hover</button>
+  <button class="btn" id="btnTether"    onclick="toggleTethers()">📏 Tether to ground</button>
+  <button class="btn" id="btnScale"     onclick="toggleScale()">📐 Scale indicator</button>
+  <button class="btn" id="btnPulse"     onclick="togglePulse()">⚡ Signal pulse (click sat)</button>
+  <button class="btn" id="btnISS"       onclick="toggleISS()">🚀 Show ISS</button>
+  <button class="btn" id="btnCoverage"  onclick="toggleCoverage()">🔵 Coverage cones</button>
+  <button class="btn" id="btnTrueScale" onclick="toggleTrueScale()">🔭 True scale</button>
 </div>
 <div id="tip"></div>
 <div id="scalePnl">
@@ -42,6 +47,14 @@
   <div style="color:#888;font-size:11px">GPS orbits 3.2× Earth's radius<br>above the surface</div>
 </div>
 <div id="pulsePnl"></div>
+<div id="scaleTxt">
+  🔭 <b>True Scale Mode</b><br><br>
+  GPS satellites are ~2.4 m wide.<br>
+  At this zoom they'd be<br>
+  <b style="color:#0df">microscopic specks</b>.<br><br>
+  Each dot = one satellite<br>
+  orbiting 20,200 km above Earth.
+</div>
 <script>
   Cesium.Ion.defaultAccessToken = "{{ cesium_token }}";
   const viewer = new Cesium.Viewer("cesium", {
@@ -209,6 +222,19 @@
     coverageOn = !coverageOn;
     coverageEntities.forEach(e => e.show = coverageOn);
     document.getElementById('btnCoverage').classList.toggle('on', coverageOn);
+  }
+
+  // ── True scale ─────────────────────────────────────────────────────────────
+  let trueScale = false;
+  function toggleTrueScale() {
+    trueScale = !trueScale;
+    document.getElementById('btnTrueScale').classList.toggle('on', trueScale);
+    document.getElementById('scaleTxt').style.display = trueScale ? 'block' : 'none';
+    if (satDS) {
+      satDS.entities.values.forEach(e => {
+        if (e.point) e.point.pixelSize = new Cesium.ConstantProperty(trueScale ? 1 : 6);
+      });
+    }
   }
 </script>
 </body>
