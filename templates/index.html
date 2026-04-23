@@ -19,7 +19,8 @@
 <body>
 <div id="cesium"></div>
 <div id="controls">
-  <button class="btn" id="btnHover" onclick="toggleHover()">🛰 Altitude on hover</button>
+  <button class="btn" id="btnHover"  onclick="toggleHover()">🛰 Altitude on hover</button>
+  <button class="btn" id="btnTether" onclick="toggleTethers()">📏 Tether to ground</button>
 </div>
 <div id="tip"></div>
 <script>
@@ -30,9 +31,32 @@
   });
 
   let satDS;
+  const tetherEntities = [];
+
   fetch("/api/czml").then(r => r.json())
     .then(czml => Cesium.CzmlDataSource.load(czml))
-    .then(ds => { satDS = ds; viewer.dataSources.add(ds); viewer.clock.shouldAnimate = true; });
+    .then(ds => {
+      satDS = ds;
+      viewer.dataSources.add(ds);
+      viewer.clock.shouldAnimate = true;
+
+      ds.entities.values.forEach(entity => {
+        if (!entity.position) return;
+        tetherEntities.push(viewer.entities.add({
+          show: false,
+          polyline: {
+            positions: new Cesium.CallbackProperty(t => {
+              const pos = entity.position.getValue(t);
+              if (!pos) return [];
+              const c = Cesium.Cartographic.fromCartesian(pos);
+              return [pos, Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 0)];
+            }, false),
+            width: 1,
+            material: Cesium.Color.CYAN.withAlpha(0.22),
+          }
+        }));
+      });
+    });
 
   // ── Altitude on hover ──────────────────────────────────────────────────────
   let hoverOn = false;
@@ -59,6 +83,14 @@
     hoverOn = !hoverOn;
     document.getElementById('btnHover').classList.toggle('on', hoverOn);
     if (!hoverOn) tip.style.display = 'none';
+  }
+
+  // ── Tether to ground ───────────────────────────────────────────────────────
+  let tethersOn = false;
+  function toggleTethers() {
+    tethersOn = !tethersOn;
+    tetherEntities.forEach(e => e.show = tethersOn);
+    document.getElementById('btnTether').classList.toggle('on', tethersOn);
   }
 </script>
 </body>
