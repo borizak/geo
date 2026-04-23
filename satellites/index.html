@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Satellite Globe</title>
+  <style>
+    * { margin:0; padding:0; }
+    body { background:#000; overflow:hidden; font-family:monospace; }
+    canvas { display:block; }
+    #ui {
+      position:fixed; top:16px; left:16px;
+      color:#7cf; font-size:13px;
+      pointer-events:none; line-height:1.9;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">Scroll — zoom<br>Drag — rotate</div>
+<script>
+// ── Canvas setup ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W, H, CX, CY, SCALE;
+
+function resize() {
+  W = canvas.width  = innerWidth;
+  H = canvas.height = innerHeight;
+  CX = W / 2; CY = H / 2;
+  SCALE = Math.min(W, H) * 0.3;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── Camera / interaction state ──────────────────────────────────────────────
+let camX = 0.4, camY = 0;          // camera tilt angles
+let velX = 0,   velY = 0;          // inertia
+let dragging = false, prevX = 0, prevY = 0;
+let zoom = 1, targetZoom = 1;
+let globeRotY = 0;                 // globe self-spin
+
+// ── 3D helpers ──────────────────────────────────────────────────────────────
+function applyCamera(x, y, z) {
+  // Rotate around X axis
+  let ty = y * Math.cos(camX) - z * Math.sin(camX);
+  let tz = y * Math.sin(camX) + z * Math.cos(camX);
+  y = ty; z = tz;
+  // Rotate around Y axis
+  let tx = x * Math.cos(camY) + z * Math.sin(camY);
+  tz    = -x * Math.sin(camY) + z * Math.cos(camY);
+  return [tx, y, tz];
+}
+
+// Lat/lon on unit sphere, accounting for globe self-rotation
+function latLonTo3D(lat, lon) {
+  const l = lon + globeRotY;
+  return [Math.cos(lat) * Math.cos(l), Math.sin(lat), Math.cos(lat) * Math.sin(l)];
+}
+
+// Orthographic project to screen (returns [sx, sy, depth])
+function proj(x, y, z) {
+  const s = SCALE * zoom;
+  return [CX + x * s, CY - y * s, z];
+}
+
+// ── Stars (static, screen-space) ────────────────────────────────────────────
+const STARS = Array.from({length: 280}, () => ({
+  x: Math.random(),
+  y: Math.random(),
+  r: Math.random() * 1.3 + 0.2,
+  a: Math.random() * 0.7 + 0.3,
+}));
+
+function drawStars() {
+  STARS.forEach(s => {
+    ctx.beginPath();
+    ctx.arc(s.x * W, s.y * H, s.r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${s.a})`;
+    ctx.fill();
+  });
+}
+
+// ── Globe ───────────────────────────────────────────────────────────────────
+const CONTINENTS = [
+  {lat: 0.70, lon:-1.50, dlat:0.65, dlon:0.85}, // North America
+  {lat:-0.25, lon:-1.10, dlat:0.55, dlon:0.55}, // South America
+  {lat: 0.85, lon: 0.20, dlat:0.35, dlon:0.40}, // Europe
+  {lat: 0.10, lon: 0.30, dlat:0.70, dlon:0.55}, // Africa
+  {lat: 0.80, lon: 1.30, dlat:0.65, dlon:1.20}, // Asia
+  {lat:-0.45, lon: 2.30, dlat:0.35, dlon:0.60}, // Australia
+];
+
+function drawGlobe() {
+  const r = SCALE * zoom;
+
+  // Ocean fill
+  const ocean = ctx.createRadialGradient(CX - r*0.25, CY - r*0.3, r*0.05, CX, CY, r);
+  ocean.addColorStop(0,   '#1e5a9a');
+  ocean.addColorStop(0.6, '#0d3060');
+  ocean.addColorStop(1,   '#061830');
+  ctx.beginPath();
+  ctx.arc(CX, CY, r, 0, Math.PI * 2);
+  ctx.fillStyle = ocean;
+  ctx.fill();
+
+  // Clip grid + continents to sphere disk
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(CX, CY, r, 0, Math.PI * 2);
+  ctx.clip();
+
+  const SEG = 60;
+
+  // Latitude rings
+  for (let latDeg = -75; latDeg <= 75; latDeg += 15) {
+    const lat = latDeg * Math.PI / 180;
+    let prev = null;
+    for (let i = 0; i <= SEG; i++) {
+      const lon = (i / SEG) * Math.PI * 2;
+      const [gx, gy, gz] = latLonTo3D(lat, lon);
+      const [cx2, cy2, cz] = applyCamera(gx, gy, gz);
+      const [sx, sy] = proj(cx2, cy2, cz);
+      if (prev) {
+        const a = ((cz + prev[2]) / 2) > 0 ? 0.18 : 0.04;
+        ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(sx, sy);
+        ctx.strokeStyle = `rgba(120,180,255,${a})`; ctx.lineWidth = 0.7; ctx.stroke();
+      }
+      prev = [sx, sy, cz];
+    }
+  }
+
+  // Longitude lines
+  for (let lonDeg = 0; lonDeg < 360; lonDeg += 15) {
+    const lon = lonDeg * Math.PI / 180;
+    let prev = null;
+    for (let i = 0; i <= SEG; i++) {
+      const lat = (i / SEG) * Math.PI - Math.PI / 2;
+      const [gx, gy, gz] = latLonTo3D(lat, lon);
+      const [cx2, cy2, cz] = applyCamera(gx, gy, gz);
+      const [sx, sy] = proj(cx2, cy2, cz);
+      if (prev) {
+        const a = ((cz + prev[2]) / 2) > 0 ? 0.18 : 0.04;
+        ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(sx, sy);
+        ctx.strokeStyle = `rgba(120,180,255,${a})`; ctx.lineWidth = 0.7; ctx.stroke();
+      }
+      prev = [sx, sy, cz];
+    }
+  }
+
+  // Continents
+  CONTINENTS.forEach(c => {
+    const [cgx, cgy, cgz] = latLonTo3D(c.lat, c.lon);
+    const [,, cz0] = applyCamera(cgx, cgy, cgz);
+    const steps = 24;
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const t = (i / steps) * Math.PI * 2;
+      const [gx, gy, gz] = latLonTo3D(c.lat + c.dlat/2 * Math.sin(t), c.lon + c.dlon/2 * Math.cos(t));
+      const [cx2, cy2, cz] = applyCamera(gx, gy, gz);
+      const [sx, sy] = proj(cx2, cy2, cz);
+      i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+    }
+    ctx.closePath();
+    const a = cz0 > 0 ? 0.88 : 0.18;
+    ctx.fillStyle   = `rgba(45,106,45,${a})`;
+    ctx.strokeStyle = `rgba(70,150,70,${a * 0.7})`;
+    ctx.lineWidth = 0.5;
+    ctx.fill(); ctx.stroke();
+  });
+
+  ctx.restore();
+
+  // Atmosphere halo
+  const atm = ctx.createRadialGradient(CX, CY, r * 0.93, CX, CY, r * 1.12);
+  atm.addColorStop(0, 'rgba(50,130,255,0)');
+  atm.addColorStop(1, 'rgba(50,130,255,0.22)');
+  ctx.beginPath();
+  ctx.arc(CX, CY, r * 1.12, 0, Math.PI * 2);
+  ctx.fillStyle = atm;
+  ctx.fill();
+
+  // Specular highlight
+  const spec = ctx.createRadialGradient(CX - r*0.35, CY - r*0.38, 0, CX - r*0.3, CY - r*0.3, r * 0.68);
+  spec.addColorStop(0, 'rgba(255,255,255,0.15)');
+  spec.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.beginPath();
+  ctx.arc(CX, CY, r, 0, Math.PI * 2);
+  ctx.fillStyle = spec;
+  ctx.fill();
+}
+
+// ── Satellites ──────────────────────────────────────────────────────────────
+const ORBIT_R = 1.6;
+
+const SATS = Array.from({length: 10}, (_, i) => ({
+  incl:  (i / 10) * Math.PI,         // inclination  0→180°
+  raan:  (i / 10) * Math.PI * 2,     // right-ascension  0→360°
+  angle: (i / 10) * Math.PI * 2,     // current position in orbit
+  speed: 0.25 + (i % 3) * 0.09,
+  blink: Math.random() * Math.PI * 2,
+}));
+
+function satWorldPos(sat) {
+  const ox = Math.cos(sat.angle) * ORBIT_R;
+  const oy = 0;
+  const oz = Math.sin(sat.angle) * ORBIT_R;
+  // Inclination (rotate around X)
+  const iy = oy * Math.cos(sat.incl) - oz * Math.sin(sat.incl);
+  const iz = oy * Math.sin(sat.incl) + oz * Math.cos(sat.incl);
+  // RAAN (rotate around Y)
+  const rx =  ox * Math.cos(sat.raan) + iz * Math.sin(sat.raan);
+  const rz = -ox * Math.sin(sat.raan) + iz * Math.cos(sat.raan);
+  return [rx, iy, rz];
+}
+
+// Draw one satellite's orbit ring in two passes (back then front)
+function drawOrbit(sat, frontPass) {
+  const SEG = 80;
+  let prev = null;
+  for (let i = 0; i <= SEG; i++) {
+    const a = (i / SEG) * Math.PI * 2;
+    const [wx, wy, wz] = satWorldPos({...sat, angle: a});
+    const [cx2, cy2, cz] = applyCamera(wx, wy, wz);
+    const [sx, sy] = proj(cx2, cy2, cz);
+    if (prev) {
+      const avgZ = (cz + prev[2]) / 2;
+      const isFront = avgZ > 0;
+      if (isFront === frontPass) {
+        const a2 = isFront ? 0.55 : 0.1;
+        ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(sx, sy);
+        ctx.strokeStyle = `rgba(0,160,255,${a2})`; ctx.lineWidth = 1; ctx.stroke();
+      }
+    }
+    prev = [sx, sy, cz];
+  }
+}
+
+function drawSatellite(sat, t) {
+  const [wx, wy, wz] = satWorldPos(sat);
+  const [cx2, cy2, cz] = applyCamera(wx, wy, wz);
+  const [sx, sy]       = proj(cx2, cy2, cz);
+
+  const front = cz > 0;
+  const alpha = front ? 1 : 0.28;
+  const s     = SCALE * zoom * 0.028 * (front ? 1 : 0.65);
+
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.globalAlpha = alpha;
+
+  // Body
+  ctx.fillStyle = '#cccccc';
+  ctx.fillRect(-s, -s * 0.38, s * 2, s * 0.76);
+
+  // Solar panels
+  ctx.fillStyle = '#1155cc';
+  ctx.fillRect(-s * 2.4, -s * 0.28, s * 1.1, s * 0.56);
+  ctx.fillRect( s * 1.3, -s * 0.28, s * 1.1, s * 0.56);
+
+  // Blink light
+  if (Math.sin(t * 4 + sat.blink) > 0.5) {
+    ctx.fillStyle = front ? '#00ff88' : '#005533';
+    ctx.beginPath(); ctx.arc(0, -s * 0.6, s * 0.35, 0, Math.PI * 2); ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ── Input ────────────────────────────────────────────────────────────────────
+function onDown(x, y) { dragging = true; prevX = x; prevY = y; }
+function onMove(x, y) {
+  if (!dragging) return;
+  velX = (y - prevY) * 0.005;
+  velY = (x - prevX) * 0.005;
+  camX += velX; camY += velY;
+  prevX = x; prevY = y;
+}
+function onUp() { dragging = false; }
+
+canvas.addEventListener('mousedown', e => onDown(e.clientX, e.clientY));
+window.addEventListener('mousemove',  e => onMove(e.clientX, e.clientY));
+window.addEventListener('mouseup',    onUp);
+canvas.addEventListener('touchstart', e => { e.preventDefault(); onDown(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+window.addEventListener('touchmove',  e => onMove(e.touches[0].clientX, e.touches[0].clientY), {passive:true});
+window.addEventListener('touchend',   onUp);
+window.addEventListener('wheel', e => {
+  targetZoom = Math.max(0.4, Math.min(5, targetZoom - e.deltaY * 0.001));
+}, {passive:true});
+
+// ── Main loop ────────────────────────────────────────────────────────────────
+let last = performance.now();
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  const t = now / 1000;
+
+  globeRotY += 0.04 * dt;
+  SATS.forEach(s => s.angle += s.speed * dt);
+
+  if (!dragging) { velX *= 0.88; velY *= 0.88; camX += velX; camY += velY; }
+  zoom += (targetZoom - zoom) * 0.08;
+
+  // Clear
+  ctx.fillStyle = '#00000f';
+  ctx.fillRect(0, 0, W, H);
+
+  drawStars();
+
+  // Back orbit segments (drawn before globe so globe occludes them)
+  SATS.forEach(s => drawOrbit(s, false));
+
+  drawGlobe();
+
+  // Front orbit segments + satellites (drawn after globe so they appear on top)
+  SATS.forEach(s => drawOrbit(s, true));
+
+  // Draw satellites sorted back→front
+  const satsCopy = SATS.map(s => {
+    const [wx, wy, wz] = satWorldPos(s);
+    const [,, cz] = applyCamera(wx, wy, wz);
+    return {s, cz};
+  });
+  satsCopy.sort((a, b) => a.cz - b.cz);
+  satsCopy.forEach(({s}) => drawSatellite(s, t));
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

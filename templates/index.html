@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>GPS Satellites</title>
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.115/Build/Cesium/Cesium.js"></script>
+  <link  href="https://cesium.com/downloads/cesiumjs/releases/1.115/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+  <style>html,body,#cesium{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}</style>
+</head>
+<body>
+<div id="cesium"></div>
+<script>
+  Cesium.Ion.defaultAccessToken = "{{ cesium_token }}";
+  const viewer = new Cesium.Viewer("cesium", {
+    shouldAnimate: true,
+    baseLayerPicker: false,
+  });
+  fetch("/api/czml")
+    .then(r => r.json())
+    .then(czml => viewer.dataSources.add(Cesium.CzmlDataSource.load(czml))
+      .then(() => viewer.clock.shouldAnimate = true));
+</script>
+</body>
+</html>
