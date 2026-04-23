@@ -29,6 +29,7 @@
   <button class="btn" id="btnTether" onclick="toggleTethers()">📏 Tether to ground</button>
   <button class="btn" id="btnScale"  onclick="toggleScale()">📐 Scale indicator</button>
   <button class="btn" id="btnPulse"  onclick="togglePulse()">⚡ Signal pulse (click sat)</button>
+  <button class="btn" id="btnISS"    onclick="toggleISS()">🚀 Show ISS</button>
 </div>
 <div id="tip"></div>
 <div id="scalePnl">
@@ -161,6 +162,20 @@
       if (pulseEntity) { viewer.entities.remove(pulseEntity); pulseEntity = null; }
       clearTimeout(pulseTimer);
       pulsePnl.style.display = 'none';
+    }
+  }
+
+  // ── ISS comparison orbit ───────────────────────────────────────────────────
+  let issOn = false, issDS = null;
+  function toggleISS() {
+    issOn = !issOn;
+    document.getElementById('btnISS').classList.toggle('on', issOn);
+    if (issOn && !issDS) {
+      fetch('/api/iss').then(r => r.json())
+        .then(czml => Cesium.CzmlDataSource.load(czml))
+        .then(ds => { issDS = ds; viewer.dataSources.add(ds); });
+    } else if (issDS) {
+      issDS.show = issOn;
     }
   }
 </script>

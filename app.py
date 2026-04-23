@@ -8,7 +8,9 @@ from sgp4.api import Satrec, jday
 app = Flask(__name__)
 CESIUM_TOKEN = os.environ.get("CESIUM_TOKEN", "")
 TLE_URL = "https://celestrak.org/NORAD/elements/gps-ops.txt"
-_cache = {"tles": None, "at": 0}
+ISS_URL = "https://celestrak.org/NORAD/elements/stations.txt"
+_cache     = {"tles": None, "at": 0}
+_iss_cache = {"tles": None, "at": 0}
 
 DURATION_H = 12    # hours of trajectory to show
 STEP_MIN   = 2     # sample interval in minutes
@@ -61,12 +63,30 @@ def teme_to_geodetic(r_km, jd, fr):
     return math.degrees(lat), math.degrees(lon), alt * 1000  # alt in metres
 
 
-def build_czml(tles):
+def fetch_iss():
+    now = time.time()
+    if _iss_cache["tles"] is not None and now - _iss_cache["at"] < 3600:
+        return _iss_cache["tles"]
+    resp = requests.get(ISS_URL, timeout=15)
+    resp.raise_for_status()
+    lines = [l.strip() for l in resp.text.splitlines() if l.strip()]
+    for i in range(0, len(lines) - 2, 3):
+        if "ISS" in lines[i].upper():
+            _iss_cache["tles"] = [(lines[i], lines[i+1], lines[i+2])]
+            _iss_cache["at"]   = now
+            return _iss_cache["tles"]
+    return []
+
+
+def build_czml(tles, color=None):
     t0 = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     t1 = t0 + timedelta(hours=DURATION_H)
     iso0 = t0.isoformat().replace("+00:00", "Z")
     iso1 = t1.isoformat().replace("+00:00", "Z")
     interval = f"{iso0}/{iso1}"
+
+    pt_color   = color or [0, 220, 255, 255]
+    path_color = pt_color[:3] + [120]
 
     doc = [{"id": "document", "name": "GPS", "version": "1.0",
             "clock": {"currentTime": iso0, "multiplier": 60,
@@ -108,7 +128,7 @@ def build_czml(tles):
                 "cartographicDegrees": cartesian,
             },
             "point": {
-                "color": {"rgba": [0, 220, 255, 255]},
+                "color": {"rgba": pt_color},
                 "pixelSize": 6,
                 "outlineColor": {"rgba": [255, 255, 255, 80]},
                 "outlineWidth": 1,
@@ -118,7 +138,7 @@ def build_czml(tles):
                 "leadTime":  STEP_MIN * 60 * 30,
                 "trailTime": STEP_MIN * 60 * 30,
                 "width": 1,
-                "material": {"solidColor": {"color": {"rgba": [0, 180, 255, 120]}}},
+                "material": {"solidColor": {"color": {"rgba": path_color}}},
             },
         })
 
@@ -133,6 +153,11 @@ def index():
 @app.route("/api/czml")
 def czml():
     return jsonify(build_czml(fetch_tles()))
+
+
+@app.route("/api/iss")
+def iss():
+    return jsonify(build_czml(fetch_iss(), color=[255, 165, 0, 255]))
 
 
 if __name__ == "__main__":
