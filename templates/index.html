@@ -17,6 +17,9 @@
     #scalePnl { position:fixed; bottom:60px; right:10px; background:rgba(0,0,0,0.85); color:#fff;
                 padding:14px 16px; border-radius:8px; font:12px monospace; display:none;
                 z-index:10; border:1px solid rgba(0,220,255,0.3); line-height:1.9; }
+    #pulsePnl { position:fixed; top:10px; right:10px; background:rgba(0,0,0,0.88); color:#ff0;
+                padding:10px 16px; border-radius:8px; font:13px monospace; display:none;
+                z-index:20; border:1px solid rgba(255,220,0,0.5); line-height:1.6; }
   </style>
 </head>
 <body>
@@ -25,6 +28,7 @@
   <button class="btn" id="btnHover"  onclick="toggleHover()">🛰 Altitude on hover</button>
   <button class="btn" id="btnTether" onclick="toggleTethers()">📏 Tether to ground</button>
   <button class="btn" id="btnScale"  onclick="toggleScale()">📐 Scale indicator</button>
+  <button class="btn" id="btnPulse"  onclick="togglePulse()">⚡ Signal pulse (click sat)</button>
 </div>
 <div id="tip"></div>
 <div id="scalePnl">
@@ -35,6 +39,7 @@
   <div style="background:#00dfff;height:7px;width:159px;border-radius:3px;margin:3px 0 10px"></div>
   <div style="color:#888;font-size:11px">GPS orbits 3.2× Earth's radius<br>above the surface</div>
 </div>
+<div id="pulsePnl"></div>
 <script>
   Cesium.Ion.defaultAccessToken = "{{ cesium_token }}";
   const viewer = new Cesium.Viewer("cesium", {
@@ -111,6 +116,52 @@
     scaleOn = !scaleOn;
     document.getElementById('scalePnl').style.display = scaleOn ? 'block' : 'none';
     document.getElementById('btnScale').classList.toggle('on', scaleOn);
+  }
+
+  // ── Signal travel time ─────────────────────────────────────────────────────
+  let pulseOn = false;
+  let pulseEntity = null, pulseTimer = null;
+  const pulsePnl = document.getElementById('pulsePnl');
+  const clickH = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  clickH.setInputAction(e => {
+    if (!pulseOn) return;
+    const picked = viewer.scene.pick(e.position);
+    if (!Cesium.defined(picked) || !picked.id || !picked.id.position) return;
+    const ent = picked.id;
+    const pos = ent.position.getValue(viewer.clock.currentTime);
+    if (!pos) return;
+    const carto = Cesium.Cartographic.fromCartesian(pos);
+    const alt   = Math.round(carto.height / 1000);
+    const ms    = Math.round(alt / 299.792);
+    const ground = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, 0);
+
+    if (pulseEntity) viewer.entities.remove(pulseEntity);
+    clearTimeout(pulseTimer);
+    pulseEntity = viewer.entities.add({
+      polyline: {
+        positions: [pos, ground],
+        width: 2,
+        material: new Cesium.PolylineGlowMaterialProperty({
+          glowPower: 0.3, color: Cesium.Color.YELLOW }),
+      }
+    });
+    pulsePnl.innerHTML = `<b>${ent.name}</b>  ⚡ ~${ms} ms to Earth`
+      + `<br><span style="color:#aaa;font-size:11px">${alt.toLocaleString()} km ÷ 299,792 km/s</span>`;
+    pulsePnl.style.display = 'block';
+    pulseTimer = setTimeout(() => {
+      if (pulseEntity) { viewer.entities.remove(pulseEntity); pulseEntity = null; }
+      pulsePnl.style.display = 'none';
+    }, 5000);
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  function togglePulse() {
+    pulseOn = !pulseOn;
+    document.getElementById('btnPulse').classList.toggle('on', pulseOn);
+    if (!pulseOn) {
+      if (pulseEntity) { viewer.entities.remove(pulseEntity); pulseEntity = null; }
+      clearTimeout(pulseTimer);
+      pulsePnl.style.display = 'none';
+    }
   }
 </script>
 </body>
