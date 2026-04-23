@@ -25,11 +25,12 @@
 <body>
 <div id="cesium"></div>
 <div id="controls">
-  <button class="btn" id="btnHover"  onclick="toggleHover()">🛰 Altitude on hover</button>
-  <button class="btn" id="btnTether" onclick="toggleTethers()">📏 Tether to ground</button>
-  <button class="btn" id="btnScale"  onclick="toggleScale()">📐 Scale indicator</button>
-  <button class="btn" id="btnPulse"  onclick="togglePulse()">⚡ Signal pulse (click sat)</button>
-  <button class="btn" id="btnISS"    onclick="toggleISS()">🚀 Show ISS</button>
+  <button class="btn" id="btnHover"    onclick="toggleHover()">🛰 Altitude on hover</button>
+  <button class="btn" id="btnTether"   onclick="toggleTethers()">📏 Tether to ground</button>
+  <button class="btn" id="btnScale"    onclick="toggleScale()">📐 Scale indicator</button>
+  <button class="btn" id="btnPulse"    onclick="togglePulse()">⚡ Signal pulse (click sat)</button>
+  <button class="btn" id="btnISS"      onclick="toggleISS()">🚀 Show ISS</button>
+  <button class="btn" id="btnCoverage" onclick="toggleCoverage()">🔵 Coverage cones</button>
 </div>
 <div id="tip"></div>
 <div id="scalePnl">
@@ -49,7 +50,10 @@
   });
 
   let satDS;
-  const tetherEntities = [];
+  const tetherEntities   = [];
+  const coverageEntities = [];
+  // GPS horizon coverage radius on Earth surface (~76° Earth-central angle from sub-sat point)
+  const COVERAGE_RADIUS  = 8462e3;
 
   fetch("/api/czml").then(r => r.json())
     .then(czml => Cesium.CzmlDataSource.load(czml))
@@ -60,6 +64,7 @@
 
       ds.entities.values.forEach(entity => {
         if (!entity.position) return;
+
         tetherEntities.push(viewer.entities.add({
           show: false,
           polyline: {
@@ -71,6 +76,25 @@
             }, false),
             width: 1,
             material: Cesium.Color.CYAN.withAlpha(0.22),
+          }
+        }));
+
+        coverageEntities.push(viewer.entities.add({
+          show: false,
+          position: new Cesium.CallbackProperty(t => {
+            const pos = entity.position.getValue(t);
+            if (!pos) return Cesium.Cartesian3.ZERO;
+            const c = Cesium.Cartographic.fromCartesian(pos);
+            return Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 0);
+          }, false),
+          ellipse: {
+            semiMajorAxis: COVERAGE_RADIUS,
+            semiMinorAxis: COVERAGE_RADIUS,
+            material: Cesium.Color.CYAN.withAlpha(0.04),
+            outline: true,
+            outlineColor: Cesium.Color.CYAN.withAlpha(0.28),
+            outlineWidth: 1,
+            height: 0,
           }
         }));
       });
@@ -177,6 +201,14 @@
     } else if (issDS) {
       issDS.show = issOn;
     }
+  }
+
+  // ── Coverage cones ─────────────────────────────────────────────────────────
+  let coverageOn = false;
+  function toggleCoverage() {
+    coverageOn = !coverageOn;
+    coverageEntities.forEach(e => e.show = coverageOn);
+    document.getElementById('btnCoverage').classList.toggle('on', coverageOn);
   }
 </script>
 </body>
