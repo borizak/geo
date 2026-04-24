@@ -25,7 +25,7 @@
 </head>
 <body>
 <div id="cesium"></div>
-<div id="scaleTxt">⚠ TRUE SCALE MODE</div>
+<div id="scaleTxt">⚠ TRUE SCALE MODE &nbsp;|&nbsp; Drag = orbit around satellite &nbsp;&nbsp; Scroll = zoom</div>
 <div id="controls">
   <button class="btn" id="btnHover"     onclick="toggleHover()">🛰 Altitude on hover</button>
   <button class="btn" id="btnTether"    onclick="toggleTethers()">📏 Tether to ground</button>
@@ -50,27 +50,53 @@
   let pulseLineEntity = null;
   let satBoxEntity = null, savedCamPos = null, savedCamOrient = null;
 
+  // Orbit-camera state (spherical coords relative to satellite's local frame)
+  let camAzimuth   = 0;            // angle around the satellite's "up" (radial) axis
+  let camElevation = Math.PI / 4;  // elevation above the satellite's horizontal plane
+  let camDist      = 15;           // metres from satellite centre
+
+  let mouseDown = false, lastMouseX = 0, lastMouseY = 0;
+
   const satEntities      = [];
   const tetherEntities   = [];
   const coverageEntities = [];
   const COVERAGE_RADIUS  = 8462e3;
+  const tip              = document.getElementById('tip');
+  const pulsePnl         = document.getElementById('pulsePnl');
+  const ctrl             = viewer.scene.screenSpaceCameraController;
 
-  const tip      = document.getElementById('tip');
-  const pulsePnl = document.getElementById('pulsePnl');
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  // Compute the satellite's local reference frame at a given ECEF position.
+  // Returns: up = radial (away from Earth), east, north (tangential)
+  function satLocalFrame(satPos) {
+    const up = Cesium.Cartesian3.normalize(satPos, new Cesium.Cartesian3());
+    let east = Cesium.Cartesian3.cross(Cesium.Cartesian3.UNIT_Z, up, new Cesium.Cartesian3());
+    if (Cesium.Cartesian3.magnitude(east) < 1e-6)
+      Cesium.Cartesian3.clone(Cesium.Cartesian3.UNIT_X, east);
+    Cesium.Cartesian3.normalize(east, east);
+    const north = Cesium.Cartesian3.cross(up, east, new Cesium.Cartesian3());
+    return { up, east, north };
+  }
+
+  // Transform a vector given in local (east, north, up) components to ECEF.
+  function localToECEF(le, ln, lu, frame) {
+    return new Cesium.Cartesian3(
+      frame.east.x * le + frame.north.x * ln + frame.up.x * lu,
+      frame.east.y * le + frame.north.y * ln + frame.up.y * lu,
+      frame.east.z * le + frame.north.z * ln + frame.up.z * lu
+    );
+  }
 
   // ── Central refresh ────────────────────────────────────────────────────────
   function refreshFeatures() {
-    const btn = document.getElementById('btnTrueScale');
-    btn.classList.toggle('dim', !selectedEntity);
+    document.getElementById('btnTrueScale').classList.toggle('dim', !selectedEntity);
     if (!selectedEntity && trueScaleOn) exitTrueScale();
 
     satEntities.forEach((sat, i) => {
       const isSel      = sat === selectedEntity;
       const passFilter = !selectedEntity || isSel;
-
       tetherEntities[i].show   = tethersOn  && passFilter;
       coverageEntities[i].show = coverageOn && passFilter;
-
       if (sat.point) {
         sat.point.color     = new Cesium.ConstantProperty(
           isSel ? Cesium.Color.YELLOW : Cesium.Color.fromCssColorString('#00dcff'));
@@ -106,51 +132,81 @@
     if (trueScaleOn && entity) enterTrueScale(entity);
   }
 
-  // ── True scale ─────────────────────────────────────────────────────────────
-  const ctrl = viewer.scene.screenSpaceCameraController;
-
-  // Single preRender listener — runs every frame, acts only when trueScaleOn
+  // ── True scale — orbit camera ──────────────────────────────────────────────
+  // Every frame: recompute camera position from spherical parameters so the
+  // camera stays in the satellite's reference frame automatically.
   viewer.scene.preRender.addEventListener(() => {
     if (!trueScaleOn || !selectedEntity) return;
-    const pos = selectedEntity.position.getValue(viewer.clock.currentTime);
-    if (!pos) return;
+    const satPos = selectedEntity.position.getValue(viewer.clock.currentTime);
+    if (!satPos) return;
 
-    // Unit vector pointing away from Earth center (radial)
-    const radial = Cesium.Cartesian3.normalize(pos, new Cesium.Cartesian3());
+    const frame = satLocalFrame(satPos);
+    const sinEl = Math.sin(camElevation);
+    const cosEl = Math.cos(camElevation);
+    const sinAz = Math.sin(camAzimuth);
+    const cosAz = Math.cos(camAzimuth);
 
-    // Camera sits 15 m "above" the satellite (further from Earth)
-    const camPos = Cesium.Cartesian3.add(
-      pos,
-      Cesium.Cartesian3.multiplyByScalar(radial, 15, new Cesium.Cartesian3()),
-      new Cesium.Cartesian3()
-    );
+    // Camera offset from satellite in local frame
+    const offE = camDist * cosEl * sinAz;
+    const offN = camDist * cosEl * cosAz;
+    const offU = camDist * sinEl;
 
-    // Camera looks toward Earth (-radial)
-    const direction = Cesium.Cartesian3.negate(radial, new Cesium.Cartesian3());
+    // Camera look direction: toward satellite centre
+    const dirE = -cosEl * sinAz;
+    const dirN = -cosEl * cosAz;
+    const dirU = -sinEl;
 
-    // "Up" = local north: project Earth's Z axis onto the plane ⊥ to radial
-    const earthZ = Cesium.Cartesian3.UNIT_Z;
-    const dot    = Cesium.Cartesian3.dot(earthZ, radial);
-    const north  = Cesium.Cartesian3.subtract(
-      earthZ,
-      Cesium.Cartesian3.multiplyByScalar(radial, dot, new Cesium.Cartesian3()),
-      new Cesium.Cartesian3()
-    );
-    const up = Cesium.Cartesian3.magnitude(north) > 1e-6
-      ? Cesium.Cartesian3.normalize(north, new Cesium.Cartesian3())
-      : Cesium.Cartesian3.UNIT_X;
+    // Camera up: tangent to the elevation arc — stays smooth at all angles,
+    // no singularity except at ±90° (clamped away from those)
+    const upE = -sinEl * sinAz;
+    const upN = -sinEl * cosAz;
+    const upU =  cosEl;
 
-    viewer.camera.setView({ destination: camPos, orientation: { direction, up } });
+    const camPos  = Cesium.Cartesian3.add(satPos, localToECEF(offE, offN, offU, frame), new Cesium.Cartesian3());
+    const dirECEF = localToECEF(dirE, dirN, dirU, frame);
+    const upECEF  = localToECEF(upE,  upN,  upU,  frame);
+
+    viewer.camera.setView({ destination: camPos, orientation: { direction: dirECEF, up: upECEF } });
   });
 
+  // Mouse drag — orbit around the satellite
+  viewer.scene.canvas.addEventListener('mousedown', e => {
+    if (!trueScaleOn) return;
+    mouseDown  = true;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  });
+  document.addEventListener('mousemove', e => {
+    if (!trueScaleOn || !mouseDown) return;
+    const dx = e.clientX - lastMouseX;
+    const dy = e.clientY - lastMouseY;
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+    camAzimuth   -= dx * 0.004;
+    camElevation  = Math.max(-Math.PI / 2 + 0.05,
+                    Math.min( Math.PI / 2 - 0.05, camElevation - dy * 0.004));
+  });
+  document.addEventListener('mouseup', () => { mouseDown = false; });
+
+  // Scroll — zoom in / out
+  viewer.scene.canvas.addEventListener('wheel', e => {
+    if (!trueScaleOn) return;
+    camDist = Math.max(2, Math.min(5000, camDist * Math.pow(1.1, e.deltaY / 100)));
+    e.preventDefault();
+  }, { passive: false });
+
   function enterTrueScale(entity) {
-    // Save camera state for restoration
     savedCamPos    = viewer.camera.position.clone();
     savedCamOrient = { heading: viewer.camera.heading,
                        pitch:   viewer.camera.pitch,
                        roll:    viewer.camera.roll };
 
-    // White box placeholder at satellite position
+    // Reset orbit parameters for this satellite
+    camAzimuth   = 0;
+    camElevation = Math.PI / 4;
+    camDist      = 15;
+
+    // White box placeholder at satellite's position
     if (satBoxEntity) { viewer.entities.remove(satBoxEntity); satBoxEntity = null; }
     satBoxEntity = viewer.entities.add({
       position:    entity.position,
@@ -163,12 +219,9 @@
       }
     });
 
-    // Allow very close near-clip so the box doesn't get clipped
-    if (viewer.scene.camera.frustum.near !== undefined) {
-      viewer.scene.camera.frustum.near = 0.1;
-    }
+    try { viewer.scene.camera.frustum.near = 0.1; } catch (_) {}
 
-    // Lock camera controls — preRender drives position
+    // Disable all built-in Cesium camera controls — preRender drives position
     ctrl.enableRotate    = false;
     ctrl.enableZoom      = false;
     ctrl.enableTilt      = false;
@@ -186,7 +239,7 @@
     ctrl.enableRotate    = true;
     ctrl.enableZoom      = true;
     ctrl.enableTilt      = true;
-    ctrl.enableLook      = true;
+    ctrl.enableLook      = false;
     ctrl.enableTranslate = true;
 
     if (savedCamPos) {
@@ -197,7 +250,7 @@
   }
 
   function toggleTrueScale() {
-    if (!selectedEntity) return;   // requires a selected satellite
+    if (!selectedEntity) return;
     trueScaleOn = !trueScaleOn;
     document.getElementById('btnTrueScale').classList.toggle('on', trueScaleOn);
     document.getElementById('scaleTxt').style.display = trueScaleOn ? 'block' : 'none';
@@ -255,10 +308,11 @@
   // ── Click — select / deselect ──────────────────────────────────────────────
   const clickH = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
   clickH.setInputAction(e => {
+    if (mouseDown) return; // ignore if we were dragging
     const picked = viewer.scene.pick(e.position);
     if (Cesium.defined(picked) && picked.id && picked.id.position) {
       selectSat(picked.id === selectedEntity ? null : picked.id);
-    } else {
+    } else if (!trueScaleOn) {
       selectSat(null);
     }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
