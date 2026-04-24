@@ -32,7 +32,7 @@
   <button class="btn" id="btnHover"     onclick="toggleHover()">🛰 Altitude on hover</button>
   <button class="btn" id="btnTether"    onclick="toggleTethers()">📏 Tether to ground</button>
   <button class="btn" id="btnScale"     onclick="toggleScale()">📐 Scale indicator</button>
-  <button class="btn" id="btnPulse"     onclick="togglePulse()">⚡ Signal pulse (click sat)</button>
+  <button class="btn" id="btnPulse"     onclick="togglePulse()">⚡ Signal pulse</button>
   <button class="btn" id="btnISS"       onclick="toggleISS()">🚀 Show ISS</button>
   <button class="btn" id="btnCoverage"  onclick="toggleCoverage()">🔵 Coverage cones</button>
   <button class="btn" id="btnTrueScale" onclick="toggleTrueScale()">🔭 True scale</button>
@@ -62,12 +62,69 @@
     infoBox: false, selectionIndicator: false,
   });
 
-  let satDS;
+  // ── State ──────────────────────────────────────────────────────────────────
+  let satDS, selectedEntity = null;
+  let hoverOn = false, tethersOn = false, scaleOn = false;
+  let pulseOn = false, issOn = false, coverageOn = false, trueScale = false;
+  let pulseLineEntity = null;
+
+  // Parallel arrays: satEntities[i] ↔ tetherEntities[i] ↔ coverageEntities[i]
+  const satEntities      = [];
   const tetherEntities   = [];
   const coverageEntities = [];
-  // GPS horizon coverage radius on Earth surface (~76° Earth-central angle from sub-sat point)
   const COVERAGE_RADIUS  = 8462e3;
 
+  const tip      = document.getElementById('tip');
+  const pulsePnl = document.getElementById('pulsePnl');
+
+  // ── Central refresh ────────────────────────────────────────────────────────
+  // Called whenever selection or any toggle changes. Filters per-sat features
+  // to the selected satellite (or all if nothing selected).
+  function refreshFeatures() {
+    satEntities.forEach((sat, i) => {
+      const isSel     = sat === selectedEntity;
+      const passFilter = !selectedEntity || isSel;
+
+      tetherEntities[i].show   = tethersOn  && passFilter;
+      coverageEntities[i].show = coverageOn && passFilter;
+
+      if (sat.point) {
+        sat.point.color     = new Cesium.ConstantProperty(
+          isSel ? Cesium.Color.YELLOW : Cesium.Color.fromCssColorString('#00dcff'));
+        sat.point.pixelSize = new Cesium.ConstantProperty(
+          trueScale ? (isSel ? 3 : 1) : (isSel ? 10 : 6));
+      }
+    });
+
+    // Pulse line — live CallbackProperty attached to selected sat
+    if (pulseLineEntity) { viewer.entities.remove(pulseLineEntity); pulseLineEntity = null; }
+    if (pulseOn && selectedEntity) {
+      const sat = selectedEntity;
+      pulseLineEntity = viewer.entities.add({
+        polyline: {
+          positions: new Cesium.CallbackProperty(t => {
+            const pos = sat.position.getValue(t);
+            if (!pos) return [];
+            const c = Cesium.Cartographic.fromCartesian(pos);
+            return [pos, Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 0)];
+          }, false),
+          width: 2,
+          material: new Cesium.PolylineGlowMaterialProperty({
+            glowPower: 0.3, color: Cesium.Color.YELLOW }),
+        }
+      });
+    }
+
+    if (!selectedEntity || !pulseOn)  pulsePnl.style.display = 'none';
+    if (!selectedEntity || !hoverOn)  tip.style.display = 'none';
+  }
+
+  function selectSat(entity) {
+    selectedEntity = entity;
+    refreshFeatures();
+  }
+
+  // ── Data loading ───────────────────────────────────────────────────────────
   fetch("/api/czml").then(r => r.json())
     .then(czml => Cesium.CzmlDataSource.load(czml))
     .then(ds => {
@@ -77,6 +134,7 @@
 
       ds.entities.values.forEach(entity => {
         if (!entity.position) return;
+        satEntities.push(entity);
 
         tetherEntities.push(viewer.entities.add({
           show: false,
@@ -113,97 +171,75 @@
       });
     });
 
-  // ── Altitude on hover ──────────────────────────────────────────────────────
-  let hoverOn = false;
-  const tip = document.getElementById('tip');
-  const evtH = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-  evtH.setInputAction(e => {
-    if (!hoverOn) { tip.style.display = 'none'; return; }
-    const picked = viewer.scene.pick(e.endPosition);
+  // ── Click — select / deselect ──────────────────────────────────────────────
+  const clickH = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  clickH.setInputAction(e => {
+    const picked = viewer.scene.pick(e.position);
     if (Cesium.defined(picked) && picked.id && picked.id.position) {
-      const carto = Cesium.Cartographic.fromCartesian(
-        picked.id.position.getValue(viewer.clock.currentTime));
-      const alt = Math.round(carto.height / 1000);
-      tip.innerHTML = `<b>${picked.id.name}</b><br>Alt: ${alt.toLocaleString()} km`
-        + `<br><span style="color:#8ad">${Math.round(alt / 10.7)}× cruising altitude</span>`;
-      tip.style.display = 'block';
-      tip.style.left = (e.endPosition.x + 18) + 'px';
-      tip.style.top  = e.endPosition.y + 'px';
+      selectSat(picked.id === selectedEntity ? null : picked.id);
     } else {
-      tip.style.display = 'none';
+      selectSat(null);
     }
-  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
+  // ── Clock tick — live panels for selected satellite ────────────────────────
+  viewer.clock.onTick.addEventListener(() => {
+    if (!selectedEntity) return;
+    const pos = selectedEntity.position.getValue(viewer.clock.currentTime);
+    if (!pos) return;
+    const carto = Cesium.Cartographic.fromCartesian(pos);
+
+    if (hoverOn) {
+      const screenPos = viewer.scene.cartesianToCanvasCoordinates(pos);
+      if (Cesium.defined(screenPos)) {
+        const alt = Math.round(carto.height / 1000);
+        tip.innerHTML = `<b>${selectedEntity.name}</b>`
+          + `<br>Alt: ${alt.toLocaleString()} km`
+          + `<br><span style="color:#8ad">${Math.round(alt / 10.7)}× cruising altitude</span>`;
+        tip.style.display = 'block';
+        tip.style.left = (screenPos.x + 18) + 'px';
+        tip.style.top  = screenPos.y + 'px';
+      } else {
+        tip.style.display = 'none';
+      }
+    }
+
+    if (pulseOn) {
+      const alt = Math.round(carto.height / 1000);
+      const ms  = Math.round(alt / 299.792);
+      pulsePnl.innerHTML = `<b>${selectedEntity.name}</b>  ⚡ ~${ms} ms to Earth`
+        + `<br><span style="color:#aaa;font-size:11px">${alt.toLocaleString()} km ÷ 299,792 km/s</span>`;
+      pulsePnl.style.display = 'block';
+    }
+  });
+
+  // ── Feature toggles ────────────────────────────────────────────────────────
   function toggleHover() {
     hoverOn = !hoverOn;
     document.getElementById('btnHover').classList.toggle('on', hoverOn);
     if (!hoverOn) tip.style.display = 'none';
   }
 
-  // ── Tether to ground ───────────────────────────────────────────────────────
-  let tethersOn = false;
   function toggleTethers() {
     tethersOn = !tethersOn;
-    tetherEntities.forEach(e => e.show = tethersOn);
     document.getElementById('btnTether').classList.toggle('on', tethersOn);
+    refreshFeatures();
   }
 
-  // ── Scale indicator ────────────────────────────────────────────────────────
-  let scaleOn = false;
   function toggleScale() {
     scaleOn = !scaleOn;
     document.getElementById('scalePnl').style.display = scaleOn ? 'block' : 'none';
     document.getElementById('btnScale').classList.toggle('on', scaleOn);
   }
 
-  // ── Signal travel time ─────────────────────────────────────────────────────
-  let pulseOn = false;
-  let pulseEntity = null, pulseTimer = null;
-  const pulsePnl = document.getElementById('pulsePnl');
-  const clickH = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-  clickH.setInputAction(e => {
-    if (!pulseOn) return;
-    const picked = viewer.scene.pick(e.position);
-    if (!Cesium.defined(picked) || !picked.id || !picked.id.position) return;
-    const ent = picked.id;
-    const pos = ent.position.getValue(viewer.clock.currentTime);
-    if (!pos) return;
-    const carto = Cesium.Cartographic.fromCartesian(pos);
-    const alt   = Math.round(carto.height / 1000);
-    const ms    = Math.round(alt / 299.792);
-    const ground = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, 0);
-
-    if (pulseEntity) viewer.entities.remove(pulseEntity);
-    clearTimeout(pulseTimer);
-    pulseEntity = viewer.entities.add({
-      polyline: {
-        positions: [pos, ground],
-        width: 2,
-        material: new Cesium.PolylineGlowMaterialProperty({
-          glowPower: 0.3, color: Cesium.Color.YELLOW }),
-      }
-    });
-    pulsePnl.innerHTML = `<b>${ent.name}</b>  ⚡ ~${ms} ms to Earth`
-      + `<br><span style="color:#aaa;font-size:11px">${alt.toLocaleString()} km ÷ 299,792 km/s</span>`;
-    pulsePnl.style.display = 'block';
-    pulseTimer = setTimeout(() => {
-      if (pulseEntity) { viewer.entities.remove(pulseEntity); pulseEntity = null; }
-      pulsePnl.style.display = 'none';
-    }, 5000);
-  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-
   function togglePulse() {
     pulseOn = !pulseOn;
     document.getElementById('btnPulse').classList.toggle('on', pulseOn);
-    if (!pulseOn) {
-      if (pulseEntity) { viewer.entities.remove(pulseEntity); pulseEntity = null; }
-      clearTimeout(pulseTimer);
-      pulsePnl.style.display = 'none';
-    }
+    if (!pulseOn) pulsePnl.style.display = 'none';
+    refreshFeatures();
   }
 
-  // ── ISS comparison orbit ───────────────────────────────────────────────────
-  let issOn = false, issDS = null;
+  let issDS = null;
   function toggleISS() {
     issOn = !issOn;
     document.getElementById('btnISS').classList.toggle('on', issOn);
@@ -216,25 +252,17 @@
     }
   }
 
-  // ── Coverage cones ─────────────────────────────────────────────────────────
-  let coverageOn = false;
   function toggleCoverage() {
     coverageOn = !coverageOn;
-    coverageEntities.forEach(e => e.show = coverageOn);
     document.getElementById('btnCoverage').classList.toggle('on', coverageOn);
+    refreshFeatures();
   }
 
-  // ── True scale ─────────────────────────────────────────────────────────────
-  let trueScale = false;
   function toggleTrueScale() {
     trueScale = !trueScale;
     document.getElementById('btnTrueScale').classList.toggle('on', trueScale);
     document.getElementById('scaleTxt').style.display = trueScale ? 'block' : 'none';
-    if (satDS) {
-      satDS.entities.values.forEach(e => {
-        if (e.point) e.point.pixelSize = new Cesium.ConstantProperty(trueScale ? 1 : 6);
-      });
-    }
+    refreshFeatures();
   }
 </script>
 </body>
