@@ -10,39 +10,32 @@
     #controls { position:fixed; top:10px; left:10px; z-index:10; display:flex; flex-direction:column; gap:6px; }
     .btn { background:rgba(0,0,0,0.7); color:#0df; border:1px solid rgba(0,220,255,0.3);
            padding:6px 14px; border-radius:6px; cursor:pointer; font:13px monospace; white-space:nowrap; }
-    .btn.on { background:rgba(0,120,180,0.5); border-color:#0df; }
+    .btn.on  { background:rgba(0,120,180,0.5); border-color:#0df; }
+    .btn.dim { opacity:0.35; cursor:default; }
     #tip { position:fixed; background:rgba(0,0,0,0.88); color:#0df; padding:10px 14px;
            border-radius:6px; font:12px monospace; pointer-events:none; display:none;
            z-index:20; border:1px solid rgba(0,220,255,0.4); line-height:1.6; }
     #pulsePnl { position:fixed; top:10px; right:10px; background:rgba(0,0,0,0.88); color:#ff0;
                 padding:10px 16px; border-radius:8px; font:13px monospace; display:none;
                 z-index:20; border:1px solid rgba(255,220,0,0.5); line-height:1.6; }
-    #scaleTxt { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
-                background:rgba(0,0,0,0.92); color:#fff; padding:22px 30px; border-radius:10px;
-                font:13px monospace; display:none; z-index:20; border:1px solid rgba(0,220,255,0.4);
-                line-height:1.9; text-align:center; pointer-events:none; }
+    #scaleTxt { position:fixed; top:0; left:0; right:0; background:rgba(180,0,0,0.9);
+                color:#fff; text-align:center; font:bold 13px monospace; padding:5px 0;
+                z-index:30; pointer-events:none; display:none; letter-spacing:1px; }
   </style>
 </head>
 <body>
 <div id="cesium"></div>
+<div id="scaleTxt">⚠ TRUE SCALE MODE</div>
 <div id="controls">
   <button class="btn" id="btnHover"     onclick="toggleHover()">🛰 Altitude on hover</button>
   <button class="btn" id="btnTether"    onclick="toggleTethers()">📏 Tether to ground</button>
   <button class="btn" id="btnPulse"     onclick="togglePulse()">⚡ Signal pulse</button>
   <button class="btn" id="btnISS"       onclick="toggleISS()">🚀 Show ISS</button>
   <button class="btn" id="btnCoverage"  onclick="toggleCoverage()">🔵 Coverage cones</button>
-  <button class="btn" id="btnTrueScale" onclick="toggleTrueScale()">🔭 True scale</button>
+  <button class="btn dim" id="btnTrueScale" onclick="toggleTrueScale()">🔭 True scale</button>
 </div>
 <div id="tip"></div>
 <div id="pulsePnl"></div>
-<div id="scaleTxt">
-  🔭 <b>True Scale Mode</b><br><br>
-  GPS satellites are ~2.4 m wide.<br>
-  At this zoom they'd be<br>
-  <b style="color:#0df">microscopic specks</b>.<br><br>
-  Each dot = one satellite<br>
-  orbiting 20,200 km above Earth.
-</div>
 <script>
   Cesium.Ion.defaultAccessToken = "{{ cesium_token }}";
   const viewer = new Cesium.Viewer("cesium", {
@@ -53,10 +46,10 @@
   // ── State ──────────────────────────────────────────────────────────────────
   let satDS, selectedEntity = null;
   let hoverOn = false, tethersOn = false;
-  let pulseOn = false, issOn = false, coverageOn = false, trueScale = false;
+  let pulseOn = false, issOn = false, coverageOn = false, trueScaleOn = false;
   let pulseLineEntity = null;
+  let satBoxEntity = null, savedCamPos = null, savedCamOrient = null;
 
-  // Parallel arrays: satEntities[i] ↔ tetherEntities[i] ↔ coverageEntities[i]
   const satEntities      = [];
   const tetherEntities   = [];
   const coverageEntities = [];
@@ -66,11 +59,13 @@
   const pulsePnl = document.getElementById('pulsePnl');
 
   // ── Central refresh ────────────────────────────────────────────────────────
-  // Called whenever selection or any toggle changes. Filters per-sat features
-  // to the selected satellite (or all if nothing selected).
   function refreshFeatures() {
+    const btn = document.getElementById('btnTrueScale');
+    btn.classList.toggle('dim', !selectedEntity);
+    if (!selectedEntity && trueScaleOn) exitTrueScale();
+
     satEntities.forEach((sat, i) => {
-      const isSel     = sat === selectedEntity;
+      const isSel      = sat === selectedEntity;
       const passFilter = !selectedEntity || isSel;
 
       tetherEntities[i].show   = tethersOn  && passFilter;
@@ -79,12 +74,10 @@
       if (sat.point) {
         sat.point.color     = new Cesium.ConstantProperty(
           isSel ? Cesium.Color.YELLOW : Cesium.Color.fromCssColorString('#00dcff'));
-        sat.point.pixelSize = new Cesium.ConstantProperty(
-          trueScale ? (isSel ? 3 : 1) : (isSel ? 10 : 6));
+        sat.point.pixelSize = new Cesium.ConstantProperty(isSel ? 10 : 6);
       }
     });
 
-    // Pulse line — live CallbackProperty attached to selected sat
     if (pulseLineEntity) { viewer.entities.remove(pulseLineEntity); pulseLineEntity = null; }
     if (pulseOn && selectedEntity) {
       const sat = selectedEntity;
@@ -103,13 +96,113 @@
       });
     }
 
-    if (!selectedEntity || !pulseOn)  pulsePnl.style.display = 'none';
-    if (!selectedEntity || !hoverOn)  tip.style.display = 'none';
+    if (!selectedEntity || !pulseOn) pulsePnl.style.display = 'none';
+    if (!selectedEntity || !hoverOn) tip.style.display = 'none';
   }
 
   function selectSat(entity) {
     selectedEntity = entity;
     refreshFeatures();
+    if (trueScaleOn && entity) enterTrueScale(entity);
+  }
+
+  // ── True scale ─────────────────────────────────────────────────────────────
+  const ctrl = viewer.scene.screenSpaceCameraController;
+
+  // Single preRender listener — runs every frame, acts only when trueScaleOn
+  viewer.scene.preRender.addEventListener(() => {
+    if (!trueScaleOn || !selectedEntity) return;
+    const pos = selectedEntity.position.getValue(viewer.clock.currentTime);
+    if (!pos) return;
+
+    // Unit vector pointing away from Earth center (radial)
+    const radial = Cesium.Cartesian3.normalize(pos, new Cesium.Cartesian3());
+
+    // Camera sits 15 m "above" the satellite (further from Earth)
+    const camPos = Cesium.Cartesian3.add(
+      pos,
+      Cesium.Cartesian3.multiplyByScalar(radial, 15, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+
+    // Camera looks toward Earth (-radial)
+    const direction = Cesium.Cartesian3.negate(radial, new Cesium.Cartesian3());
+
+    // "Up" = local north: project Earth's Z axis onto the plane ⊥ to radial
+    const earthZ = Cesium.Cartesian3.UNIT_Z;
+    const dot    = Cesium.Cartesian3.dot(earthZ, radial);
+    const north  = Cesium.Cartesian3.subtract(
+      earthZ,
+      Cesium.Cartesian3.multiplyByScalar(radial, dot, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+    const up = Cesium.Cartesian3.magnitude(north) > 1e-6
+      ? Cesium.Cartesian3.normalize(north, new Cesium.Cartesian3())
+      : Cesium.Cartesian3.UNIT_X;
+
+    viewer.camera.setView({ destination: camPos, orientation: { direction, up } });
+  });
+
+  function enterTrueScale(entity) {
+    // Save camera state for restoration
+    savedCamPos    = viewer.camera.position.clone();
+    savedCamOrient = { heading: viewer.camera.heading,
+                       pitch:   viewer.camera.pitch,
+                       roll:    viewer.camera.roll };
+
+    // White box placeholder at satellite position
+    if (satBoxEntity) { viewer.entities.remove(satBoxEntity); satBoxEntity = null; }
+    satBoxEntity = viewer.entities.add({
+      position:    entity.position,
+      orientation: new Cesium.VelocityOrientationProperty(entity.position),
+      box: {
+        dimensions:   new Cesium.Cartesian3(3, 1.5, 1.5),
+        material:     Cesium.Color.WHITE.withAlpha(0.95),
+        outline:      true,
+        outlineColor: Cesium.Color.LIGHTGRAY,
+      }
+    });
+
+    // Allow very close near-clip so the box doesn't get clipped
+    if (viewer.scene.camera.frustum.near !== undefined) {
+      viewer.scene.camera.frustum.near = 0.1;
+    }
+
+    // Lock camera controls — preRender drives position
+    ctrl.enableRotate    = false;
+    ctrl.enableZoom      = false;
+    ctrl.enableTilt      = false;
+    ctrl.enableLook      = false;
+    ctrl.enableTranslate = false;
+  }
+
+  function exitTrueScale() {
+    trueScaleOn = false;
+    document.getElementById('btnTrueScale').classList.remove('on');
+    document.getElementById('scaleTxt').style.display = 'none';
+
+    if (satBoxEntity) { viewer.entities.remove(satBoxEntity); satBoxEntity = null; }
+
+    ctrl.enableRotate    = true;
+    ctrl.enableZoom      = true;
+    ctrl.enableTilt      = true;
+    ctrl.enableLook      = true;
+    ctrl.enableTranslate = true;
+
+    if (savedCamPos) {
+      viewer.camera.flyTo({ destination: savedCamPos,
+                            orientation: savedCamOrient, duration: 1.5 });
+      savedCamPos = savedCamOrient = null;
+    }
+  }
+
+  function toggleTrueScale() {
+    if (!selectedEntity) return;   // requires a selected satellite
+    trueScaleOn = !trueScaleOn;
+    document.getElementById('btnTrueScale').classList.toggle('on', trueScaleOn);
+    document.getElementById('scaleTxt').style.display = trueScaleOn ? 'block' : 'none';
+    if (trueScaleOn) enterTrueScale(selectedEntity);
+    else             exitTrueScale();
   }
 
   // ── Data loading ───────────────────────────────────────────────────────────
@@ -237,13 +330,6 @@
   function toggleCoverage() {
     coverageOn = !coverageOn;
     document.getElementById('btnCoverage').classList.toggle('on', coverageOn);
-    refreshFeatures();
-  }
-
-  function toggleTrueScale() {
-    trueScale = !trueScale;
-    document.getElementById('btnTrueScale').classList.toggle('on', trueScale);
-    document.getElementById('scaleTxt').style.display = trueScale ? 'block' : 'none';
     refreshFeatures();
   }
 </script>
