@@ -14,9 +14,6 @@
     #tip { position:fixed; background:rgba(0,0,0,0.88); color:#0df; padding:10px 14px;
            border-radius:6px; font:12px monospace; pointer-events:none; display:none;
            z-index:20; border:1px solid rgba(0,220,255,0.4); line-height:1.6; }
-    #scalePnl { position:fixed; bottom:60px; right:10px; background:rgba(0,0,0,0.85); color:#fff;
-                padding:14px 16px; border-radius:8px; font:12px monospace; display:none;
-                z-index:10; border:1px solid rgba(0,220,255,0.3); line-height:1.9; }
     #pulsePnl { position:fixed; top:10px; right:10px; background:rgba(0,0,0,0.88); color:#ff0;
                 padding:10px 16px; border-radius:8px; font:13px monospace; display:none;
                 z-index:20; border:1px solid rgba(255,220,0,0.5); line-height:1.6; }
@@ -31,21 +28,12 @@
 <div id="controls">
   <button class="btn" id="btnHover"     onclick="toggleHover()">🛰 Altitude on hover</button>
   <button class="btn" id="btnTether"    onclick="toggleTethers()">📏 Tether to ground</button>
-  <button class="btn" id="btnScale"     onclick="toggleScale()">📐 Scale indicator</button>
   <button class="btn" id="btnPulse"     onclick="togglePulse()">⚡ Signal pulse</button>
   <button class="btn" id="btnISS"       onclick="toggleISS()">🚀 Show ISS</button>
   <button class="btn" id="btnCoverage"  onclick="toggleCoverage()">🔵 Coverage cones</button>
   <button class="btn" id="btnTrueScale" onclick="toggleTrueScale()">🔭 True scale</button>
 </div>
 <div id="tip"></div>
-<div id="scalePnl">
-  <div style="color:#0df;font-size:13px;margin-bottom:10px">📐 Distance Scale</div>
-  <div>🌍 Earth radius — <b>6,371 km</b></div>
-  <div style="background:#1a6ac8;height:7px;width:50px;border-radius:3px;margin:3px 0 8px"></div>
-  <div>🛰 GPS altitude — <b>20,200 km</b></div>
-  <div style="background:#00dfff;height:7px;width:159px;border-radius:3px;margin:3px 0 10px"></div>
-  <div style="color:#888;font-size:11px">GPS orbits 3.2× Earth's radius<br>above the surface</div>
-</div>
 <div id="pulsePnl"></div>
 <div id="scaleTxt">
   🔭 <b>True Scale Mode</b><br><br>
@@ -64,7 +52,7 @@
 
   // ── State ──────────────────────────────────────────────────────────────────
   let satDS, selectedEntity = null;
-  let hoverOn = false, tethersOn = false, scaleOn = false;
+  let hoverOn = false, tethersOn = false;
   let pulseOn = false, issOn = false, coverageOn = false, trueScale = false;
   let pulseLineEntity = null;
 
@@ -224,12 +212,6 @@
     tethersOn = !tethersOn;
     document.getElementById('btnTether').classList.toggle('on', tethersOn);
     refreshFeatures();
-  }
-
-  function toggleScale() {
-    scaleOn = !scaleOn;
-    document.getElementById('scalePnl').style.display = scaleOn ? 'block' : 'none';
-    document.getElementById('btnScale').classList.toggle('on', scaleOn);
   }
 
   function togglePulse() {
